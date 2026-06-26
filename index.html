@@ -962,7 +962,7 @@ const Game={
   },
 
   async cloudSave(){
-    if(syncStatus==='uploading')return;  // 防并发
+    if(syncStatus==='uploading')return;
     syncStatus='uploading';
     this.updateSyncBadge();
     try{
@@ -977,12 +977,17 @@ const Game={
         lastSyncTs=data.ts||ts;
         state.lastTimestamp=lastSyncTs;
         syncStatus='idle';
+        console.log('[sync] save ok, ts='+lastSyncTs);
       }else{
+        const err=await resp.text().catch(()=>'');
+        console.warn('[sync] save HTTP'+resp.status+':',err);
         syncStatus='error';
+        UI.toast('☁️ 同步失败（'+resp.status+'）','warning');
       }
     }catch(e){
       console.warn('[sync] save error',e);
       syncStatus='offline';
+      UI.toast('☁️ 同步失败：'+e.message,'warning');
     }
     this.updateSyncBadge();
   },
@@ -1418,8 +1423,15 @@ const UI={
   },
   showSyncInfo(){
     const lastTime=lastSyncTs?new Date(lastSyncTs).toLocaleString('zh-CN',{hour12:false}):'从未';
-    const msg='☁️ 云端同步状态\n\n· 房间：'+SYNC_ROOM+'\n· 状态：'+syncStatus+'\n· 最后同步：'+lastTime+'\n· 轮询间隔：'+(SYNC_INTERVAL/1000)+'秒\n\n· 你的小豆：'+state.xiaoDou+'\n· 你的等级：Lv.'+state.level+'\n\n两边设备打开同一个链接即可实时同步。';
-    alert(msg);
+    const nextTime=lastSyncTs?new Date(lastSyncTs+SYNC_INTERVAL).toLocaleString('zh-CN',{hour12:false}):'即将';
+    const msg='☁️ 云端同步状态\n\n· 房间：'+SYNC_ROOM+'\n· 状态：'+syncStatus+'\n· 最后同步：'+lastTime+'\n· 下次轮询：'+nextTime+'\n· 轮询间隔：'+(SYNC_INTERVAL/1000)+'秒\n\n· 你的小豆：'+state.xiaoDou+'\n· 你的等级：Lv.'+state.level+'\n\n[确定] 关闭\n[取消] 强制上传当前数据';
+    if(confirm(msg)){
+      // 确定 = 关闭
+    }else{
+      // 取消 = 强制上传
+      UI.toast('⬆️ 正在强制上传...','blue');
+      Game.cloudSave();
+    }
   },
   showModal(id){document.getElementById(id).classList.remove('hide');},
   hideModal(id){document.getElementById(id).classList.add('hide');},
