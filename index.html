@@ -143,6 +143,9 @@ input,textarea{font-family:inherit;outline:none}
 .task-done{width:28px;height:28px;border-radius:50%;background:rgba(45,212,191,.15);border:2px solid #2dd4bf;display:flex;align-items:center;justify-content:center;font-size:14px;color:#2dd4bf;animation:checkPop .4s cubic-bezier(.16,1.5,.3,1)}
 @keyframes checkPop{from{transform:scale(0)}to{transform:scale(1)}}
 
+.undo-btn{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#ef4444;font-size:10px;padding:3px 8px;border-radius:6px;cursor:pointer;transition:all .2s;margin-left:6px;white-space:nowrap;font-weight:500}
+.undo-btn:active{transform:scale(.9);background:rgba(239,68,68,.22)}
+
 .all-clear-card{display:flex;align-items:center;gap:8px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.15);border-radius:12px;padding:10px 12px;margin-bottom:8px;transition:all .3s}
 .all-clear-card.active{border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.1);box-shadow:0 0 20px rgba(251,191,36,.1)}
 .all-clear-icon{font-size:20px}
@@ -1726,6 +1729,7 @@ const UI={
         html+='<div class="task-action">';
         if(done){
           html+='<div class="task-done">✓</div>';
+          html+='<button class="undo-btn" onclick="Game.undoTask(\''+task.id+'\')" title="撤回此打卡">撤回</button>';
         }else if(isStudy){
           html+='<button class="task-btn" onclick="openStudyModal()">打卡</button>';
         }else if(task.id==='walk'){
@@ -2155,7 +2159,7 @@ Game.undoLastTask=function(){
   
   // 撤回：删除打卡记录
   delete d[taskId];
-  d.completedCount=BAIC_TASKS.filter(id=>d[id]&&d[id].done).length;
+  d.completedCount=BASIC_TASKS.filter(id=>d[id]&&d[id].done).length;
   state.xiaoDou=Math.max(0,state.xiaoDou-reward);
   
   // 重新计算连续打卡
@@ -2168,6 +2172,27 @@ Game.undoLastTask=function(){
   const undoBar=document.getElementById('undoBar');
   if(undoBar)undoBar.style.bottom='-100px';
   window.lastCompletedTask=null;
+};
+
+// 撤回指定任务
+Game.undoTask=function(taskId){
+  const today=getTodayStr();
+  const d=state.daily[today];
+  if(!d||!d[taskId]||!d[taskId].done){UI.toast('该任务未打卡','warning');return;}
+  
+  const task=TASKS.find(t=>t.id===taskId);
+  const reward=task?task.reward:0;
+  
+  // 撤回：删除打卡记录
+  delete d[taskId];
+  d.completedCount=BASIC_TASKS.filter(id=>d[id]&&d[id].done).length;
+  state.xiaoDou=Math.max(0,state.xiaoDou-reward);
+  
+  // 重新计算连续打卡
+  Game.checkStreak();
+  Game.save();
+  UI.renderAll();
+  UI.toast('✅ 已撤回：'+task.name,'success');
 };
 </script>
 
