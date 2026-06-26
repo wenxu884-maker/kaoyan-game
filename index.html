@@ -1204,6 +1204,30 @@ const Game={
 
     UI.renderStatus();UI.renderTasks();UI.renderWeekBar();
     UI.toast(msg,isPenalty?'warning':'success');
+    
+    // 撤回功能：保存最后一次打卡记录，5秒内可撤回
+    if(!isPenalty && finalReward>0){
+      window.lastCompletedTask={
+        taskId: taskId,
+        date: today,
+        reward: finalReward,
+        options: options,
+        timestamp: Date.now()
+      };
+      // 显示撤回提示条
+      const undoBar=document.getElementById('undoBar');
+      const undoTaskName=document.getElementById('undoTaskName');
+      if(undoBar && undoTaskName){
+        undoTaskName.textContent=task.name+' +'+finalReward+'🔸';
+        undoBar.style.bottom='0';
+        // 5秒后自动隐藏
+        clearTimeout(window.undoBarTimer);
+        window.undoBarTimer=setTimeout(()=>{
+          undoBar.style.bottom='-100px';
+          window.lastCompletedTask=null;
+        },5000);
+      }
+    }
   },
 
   isPenalty50(){
@@ -2119,6 +2143,39 @@ document.addEventListener('touchmove',function(e){
   if(e.target.closest('.tab-content')||e.target.closest('.modal-card'))return;
   e.preventDefault();
 },{passive:false});
+
+/* ===== 撤回功能 ===== */
+Game.undoLastTask=function(){
+  const last=window.lastCompletedTask;
+  if(!last){UI.toast('没有可撤回的操作','warning');return;}
+  
+  const {taskId,date,reward}=last;
+  const d=state.daily[date];
+  if(!d||!d[taskId]||!d[taskId].done){UI.toast('打卡记录已不存在','warning');return;}
+  
+  // 撤回：删除打卡记录
+  delete d[taskId];
+  d.completedCount=BAIC_TASKS.filter(id=>d[id]&&d[id].done).length;
+  state.xiaoDou=Math.max(0,state.xiaoDou-reward);
+  
+  // 重新计算连续打卡
+  Game.checkStreak();
+  Game.save();
+  UI.renderAll();
+  UI.toast('✅ 已撤回','success');
+  
+  // 隐藏撤回提示条
+  const undoBar=document.getElementById('undoBar');
+  if(undoBar)undoBar.style.bottom='-100px';
+  window.lastCompletedTask=null;
+};
 </script>
+
+<!-- 撤回提示条 -->
+<div id="undoBar" style="position:fixed;bottom:-100px;left:0;right:0;background:rgba(45,212,191,.1);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid rgba(45,212,191,.2);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;transition:bottom .4s cubic-bezier(.16,1,.3,1);z-index:2000;box-shadow:0 -4px 20px rgba(0,0,0,.3)">
+  <div style="font-size:13px;color:#2dd4bf;font-weight:600">✅ 打卡成功！<span id="undoTaskName"></span></div>
+  <button onclick="Game.undoLastTask()" style="background:rgba(45,212,191,.2);border:1px solid rgba(45,212,191,.3);color:#2dd4bf;padding:8px 18px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s">撤回</button>
+</div>
+
 </body>
 </html>
