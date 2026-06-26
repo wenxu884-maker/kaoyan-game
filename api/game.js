@@ -1,9 +1,7 @@
 // api/game.js - 考研闯关大挑战 · 云端同步 API
-// 使用 @upstash/redis SDK（自动处理大 value + 连接池）
+// Upstash Redis REST API 直连（正确格式）
 // GET ?room=X → 拉取最新状态
 // POST {room, state, ts} → 上传状态
-
-const { Redis } = require('@upstash/redis');
 
 module.exports = async (req, res) => {
   // CORS
@@ -12,16 +10,33 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(204).end();
 
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
-  const baseUrl = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || 'https://deep-quetzal-136262.upstash.io').replace(/\/+$/, '');
+  const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
+  const BASE = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || 'https://deep-quetzal-136262.upstash.io').replace(/\/+$/, '');
 
-  if (!token) return res.status(500).json({ error: 'missing token' });
+  if (!TOKEN) return res.status(500).json({ error: 'missing token' });
 
-  // 创建 Redis client（SDK 会自动复用连接）
-  const redis = new Redis({
-    url: baseUrl,
-    token: token,
-  });
+  // Upstash REST helper
+  const upstashGet = async (key) => {
+    const url = BASE + '/get/' + encodeURIComponent(key);
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + TOKEN },
+    });
+    return resp.json();
+  };
+
+  const upstashSet = async (key, value) => {
+    const url = BASE + '/set/' + encodeURIComponent(key);
+    const body = typeof value === 'string' ? value : JSON.stringify(value);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + TOKEN,
+        'Content-Type': 'text/plain',
+      },
+      body: body,
+    });
+    return resp.json();
+  };
 
   // GET 拉取云端状态
   if (req.method === 'GET') {
@@ -30,23 +45,25 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'invalid room' });
     }
     try {
-      const [stateStr, tsStr] = await Promise.all([
-        redis.get('state:' + room),
-        redis.get('ts:' + room),
+      const [stateRaw, tsRaw] = await Promise.all([
+        upstashGet('state:' + room),
+        upstashGet('ts:' + room),
       ]);
 
-      if (!stateStr) {
+      if (!stateRaw || stateRaw.result == null) {
         return res.status(200).json({ state: null, ts: 0, room });
       }
 
       let parsed;
       try {
-        parsed = typeof stateStr === 'string' ? JSON.parse(stateStr) : stateStr;
+        // Upstash GET 返回的 result 是字符串（JSON 编码的）
+        const resultStr = stateRaw.result;
+        parsed = typeof resultStr === 'string' ? JSON.parse(resultStr) : resultStr;
       } catch (e) {
         return res.status(500).json({ error: 'corrupt state' });
       }
 
-      const ts = tsStr ? parseInt(tsStr, 10) : 0;
+      const ts = tsRaw && tsRaw.result != null ? parseInt(tsRaw.result, 10) : 0;
       return res.status(200).json({ state: parsed, ts, room });
     } catch (e) {
       return res.status(500).json({ error: 'fetch failed', detail: e.message });
@@ -73,11 +90,15 @@ module.exports = async (req, res) => {
       const stateJson = JSON.stringify(body.state);
       const stateSizeKB = Math.round(stateJson.length / 1024 * 10) / 10;
 
-      // 并行写状态 + 时间戳，TTL 30 天
-      await Promise.all([
-        redis.set('state:' + room, stateJson, { ex: 2592000 }),
-        redis.set('ts:' + room, clientTs.toString(), { ex: 2592000 }),
+      // 并行写状态 + 时间戳
+      const [setRes, tsRes] = await Promise.all([
+        upstashSet('state:' + room, stateJson),
+        upstashSet('ts:' + room, clientTs.toString()),
       ]);
+
+      if (setRes && setRes.error) {
+        return res.status(500).json({ error: 'upstash set failed', detail: setRes.error });
+      }
 
       return res.status(200).json({ ok: true, ts: clientTs, room, sizeKB: stateSizeKB });
     } catch (e) {
