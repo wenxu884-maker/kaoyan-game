@@ -1,8 +1,7 @@
 // api/game.js - 考研闯关大挑战 · 云端同步 API
-// 极简版：Upstash Redis REST API 直接读写
-// 接收 GET(?room=X) 拉取最新状态，POST({room,state,ts}) 上传状态
-
-const UPSTASH_URL = 'https://deep-quetzal-136262.upstash.io';
+// Upstash Redis REST API 读写
+// GET ?room=X → 拉取最新状态
+// POST {room, state, ts} → 上传状态
 
 module.exports = async (req, res) => {
   // CORS
@@ -11,19 +10,29 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(204).end();
 
-  // 读 token（环境变量优先，本地调试 fallback）
-  const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || 'ggAAAAAAAhRGAAIgcDIbIg0dPgZUH2SsBNCn8BwtqU5haRiDPMSazt-4iql1Rg';
-  const BASE = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || UPSTASH_URL;
+  const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
+  const BASE = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || 'https://deep-quetzal-136262.upstash.io').replace(/\/+$/, '');
 
-  // Upstash REST 助手
-  const upstash = async (path, init = {}) => {
-    const url = BASE + path;
+  if (!TOKEN) return res.status(500).json({ error: 'missing token' });
+
+  // Upstash REST helper (value in body for large payloads)
+  const upstashGet = async (key) => {
+    const url = BASE + '/get/' + encodeURIComponent(key);
+    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + TOKEN } });
+    return resp.json();
+  };
+
+  const upstashSet = async (key, value, ttlSec) => {
+    // Use POST with JSON body (avoids URL length limits for large state)
+    const url = BASE + '/set/' + encodeURIComponent(key);
+    const body = { value, ...(ttlSec ? { EX: ttlSec } : {}) };
     const resp = await fetch(url, {
-      ...init,
+      method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + TOKEN,
-        ...(init.headers || {}),
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify(body),
     });
     return resp.json();
   };
@@ -35,12 +44,12 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'invalid room' });
     }
     try {
-      // 状态本身
-      const stateRaw = await upstash('/get/state:' + room);
-      // 时间戳（用于冲突解决）
-      const tsRaw = await upstash('/get/ts:' + room);
+      const [stateRaw, tsRaw] = await Promise.all([
+        upstashGet('state:' + room),
+        upstashGet('ts:' + room),
+      ]);
 
-      if (!stateRaw || !stateRaw.result) {
+      if (!stateRaw || stateRaw.result == null) {
         return res.status(200).json({ state: null, ts: 0, room });
       }
 
@@ -48,19 +57,24 @@ module.exports = async (req, res) => {
       try {
         parsed = typeof stateRaw.result === 'string' ? JSON.parse(stateRaw.result) : stateRaw.result;
       } catch (e) {
-        return res.status(500).json({ error: 'corrupt state', detail: e.message });
+        return res.status(500).json({ error: 'corrupt state' });
       }
 
-      const ts = tsRaw && tsRaw.result ? parseInt(tsRaw.result, 10) : 0;
+      const ts = tsRaw && tsRaw.result != null ? parseInt(tsRaw.result, 10) : 0;
       return res.status(200).json({ state: parsed, ts, room });
     } catch (e) {
       return res.status(500).json({ error: 'fetch failed', detail: e.message });
     }
   }
 
-  // POST 上传状态（last-writer-wins，简单可靠）
+  // POST 上传状态
   if (req.method === 'POST') {
-    const body = req.body || {};
+    let body = req.body || {};
+    // Vercel serverless auto-parses JSON body
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch (e) { body = {}; }
+    }
+
     const room = (body.room || 'default').toString();
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(room)) {
       return res.status(400).json({ error: 'invalid room' });
@@ -74,10 +88,11 @@ module.exports = async (req, res) => {
       const stateJson = JSON.stringify(body.state);
       const stateSizeKB = Math.round(stateJson.length / 1024 * 10) / 10;
 
-      // 写状态（用 SET + EX 30 天 TTL，避免永久堆积）
-      const setRes = await upstash('/set/state:' + room + '/' + encodeURIComponent(stateJson) + '?EX=2592000', { method: 'POST' });
-      // 写时间戳
-      const tsRes = await upstash('/set/ts:' + room + '/' + clientTs + '?EX=2592000', { method: 'POST' });
+      // 并行写状态 + 时间戳，TTL 30 天
+      const [setRes, tsRes] = await Promise.all([
+        upstashSet('state:' + room, body.state, 2592000),
+        upstashSet('ts:' + room, clientTs, 2592000),
+      ]);
 
       if (setRes && setRes.error) {
         return res.status(500).json({ error: 'upstash set failed', detail: setRes.error });
